@@ -33,8 +33,15 @@ print(f'Using device: {device}')
 utils.same_seed(args.seed)
 train_set = dataset.ReconDataset(args.data_path, args.n_points, args.n_samples, args.grid_res)
 
-train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=4,
-                                               pin_memory=True)
+# Optimized: Use persistent_workers to avoid recreating workers, and prefetch_factor for better GPU utilization
+# Note: persistent_workers requires num_workers > 0
+try:
+    train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=4,
+                                                   pin_memory=True, persistent_workers=True, prefetch_factor=2)
+except Exception as e:
+    print(f"Warning: Could not use persistent_workers, falling back to standard DataLoader: {e}")
+    train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=4,
+                                                   pin_memory=True)
 # get model
 net = Network_predict_angle(in_dim=3, angle_in_dim=12, decoder_hidden_dim=args.decoder_hidden_dim, nl=args.nl,
                             decoder_n_hidden_layers=args.decoder_n_hidden_layers, init_type=args.init_type,
@@ -83,13 +90,17 @@ for epoch in range(args.num_epochs):
         net.zero_grad()
         net.train()
 
-        mnfld_points, mnfld_n_gt, nonmnfld_points, near_points, local_coord_u, local_coord_v = data[
-            'points'].to(device), data['mnfld_n'].to(device), data['nonmnfld_points'].to(device), data[
-            'near_points'].to(device), data['local_coordinates_u'].to(device), data['local_coordinates_v'].to(device)
+        # Optimized: Move to device in one go and set requires_grad more efficiently
+        mnfld_points = data['points'].to(device, non_blocking=True)
+        mnfld_n_gt = data['mnfld_n'].to(device, non_blocking=True)
+        nonmnfld_points = data['nonmnfld_points'].to(device, non_blocking=True)
+        near_points = data['near_points'].to(device, non_blocking=True)
+        local_coord_u = data['local_coordinates_u'].to(device, non_blocking=True)
+        local_coord_v = data['local_coordinates_v'].to(device, non_blocking=True)
 
-        mnfld_points.requires_grad_()
-        nonmnfld_points.requires_grad_()
-        near_points.requires_grad_()
+        mnfld_points.requires_grad_(True)
+        nonmnfld_points.requires_grad_(True)
+        near_points.requires_grad_(True)
 
         features = torch.cat((mnfld_points, mnfld_n_gt, local_coord_u, local_coord_v), dim=-1)
 
@@ -103,7 +114,8 @@ for epoch in range(args.num_epochs):
                               mnfld_pts_theta_output_pred=mnfld_pts_theta_output_pred,
                               local_coord_u=local_coord_u, local_coord_v=local_coord_v)
 
-        lr = torch.tensor(optimizer.param_groups[0]['lr'])
+        # Optimized: Avoid creating tensor for lr
+        lr = optimizer.param_groups[0]['lr']
         loss_dict["lr"] = lr
 
         loss_dict["loss"].backward()
