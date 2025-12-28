@@ -4,7 +4,7 @@ def add_args(parser):
     parser.add_argument('--logdir', type=str, default='./doubleTorus/', help='log directory')
     parser.add_argument('--model_name', type=str, default='model', help='trained model name')
     parser.add_argument('--seed', type=int, default=3627473, help='random seed')
-    parser.add_argument('--data_path', type=str, default='/home/qiujie/NeurCross_public/data/doubleTorus/input/doubleTorus.ply', help='path to input dir')
+    parser.add_argument('--data_path', type=str, default='./doubleTorus/input/doubleTorus.ply', help='path to input dir')
     parser.add_argument('--n_samples', type=int, default=10000,
                         help='numbers of epochs')
     parser.add_argument('--n_points', type=int, default=15000, help='number of points in each point cloud')

@@ -1,7 +1,7 @@
 import os
 import sys
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
@@ -26,6 +26,8 @@ os.makedirs(logdir, exist_ok=True)
 log_file = utils.setup_logdir_only_log(logdir, args)
 
 device = 'cpu' if not torch.cuda.is_available() else 'cuda'
+
+print(f'Using device: {device}')
 
 # get data loaders
 utils.same_seed(args.seed)
