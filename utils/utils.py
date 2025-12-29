@@ -72,8 +72,7 @@ def setup_logdir_only_log(logdir, args=None):
 
 
 def gradient(inputs, outputs, create_graph=True, retain_graph=True):
-    # Optimized: Use ones_like without explicit device transfer (already on same device)
-    d_points = torch.ones_like(outputs, requires_grad=False)
+    d_points = torch.ones_like(outputs, requires_grad=False, device=outputs.device)
     points_grad = grad(
         outputs=outputs,
         inputs=inputs,

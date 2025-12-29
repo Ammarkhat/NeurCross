@@ -39,46 +39,6 @@ class MorseLoss_quad_mesh(nn.Module):
         self.vertex_neighbors = vertex_neighbors
         self.axis_angle_R_mat_list = axis_angle_R_mat_list
         self.device = device
-        
-        # Lazy pre-computation: will compute on first forward pass
-        self._indices_precomputed = False
-        self.vertex_indices_gpu = None
-        self.rotation_matrices_gpu = None
-    
-    def _precompute_indices(self):
-        """Pre-compute indices and rotation matrices on GPU to avoid repeated CPU-GPU transfers"""
-        if self._indices_precomputed:
-            return
-            
-        if self.vertex_neighbors_list is None or len(self.vertex_neighbors_list) == 0:
-            self.vertex_indices_gpu = None
-            self.rotation_matrices_gpu = None
-            self._indices_precomputed = True
-            return
-        
-        print(f"Pre-computing {len(self.vertex_neighbors_list)} vertex groups on GPU...")
-        
-        # Pre-compute all vertex indices on GPU
-        self.vertex_indices_gpu = []
-        self.rotation_matrices_gpu = []
-        
-        # Batch tensor creation for better performance
-        for i in range(len(self.vertex_neighbors_list)):
-            if (i + 1) % 100 == 0:
-                print(f"  Progress: {i+1}/{len(self.vertex_neighbors_list)}")
-            
-            idx = torch.tensor(self.vertex_neighbors_list[i], dtype=torch.long, device=self.device)
-            self.vertex_indices_gpu.append(idx)
-            
-            # Pre-compute rotation matrices
-            if self.axis_angle_R_mat_list is not None and i < len(self.axis_angle_R_mat_list):
-                axis_angle_R_mat_i = torch.tensor(self.axis_angle_R_mat_list[i], dtype=torch.float32, device=self.device)
-                self.rotation_matrices_gpu.append(axis_angle_R_mat_i)
-            else:
-                self.rotation_matrices_gpu.append(None)
-        
-        self._indices_precomputed = True
-        print("Pre-computation complete!")
 
 
 
@@ -95,10 +55,10 @@ class MorseLoss_quad_mesh(nn.Module):
         non_manifold_pred = output_pred["nonmanifold_pnts_pred"]
         manifold_pred = output_pred["manifold_pnts_pred"]
 
-        morse_loss = torch.zeros(1, device=self.device)
-        normal_term = torch.zeros(1, device=self.device)
-        eikonal_term = torch.zeros(1, device=self.device)
-        mnfld_hessian_term = torch.zeros(1, device=self.device)
+        morse_loss = torch.tensor([0.0], device=self.device)
+        normal_term = torch.tensor([0.0], device=self.device)
+        eikonal_term = torch.tensor([0.0], device=self.device)
+        mnfld_hessian_term = torch.tensor([0.0], device=self.device)
 
         # compute gradients for div (divergence), curl and curv (curvature)
         if manifold_pred is not None:
@@ -115,8 +75,6 @@ class MorseLoss_quad_mesh(nn.Module):
             morse_nonmnfld_grad = nonmnfld_grad
 
         if self.use_morse:
-            # Optimized: Compute all gradient components in one pass if possible
-            # Compute Hessian by taking gradient of each component of the gradient
             mnfld_dx = utils.gradient(mnfld_points, mnfld_grad[:, :, 0])
             mnfld_dy = utils.gradient(mnfld_points, mnfld_grad[:, :, 1])
             if dims == 3:
@@ -125,7 +83,7 @@ class MorseLoss_quad_mesh(nn.Module):
             else:
                 mnfld_hessian_term = torch.stack((mnfld_dx, mnfld_dy), dim=-1)
 
-            morse_mnfld = torch.zeros(1, device=self.device)
+            morse_mnfld = torch.tensor([0.0], device=self.device)
             if self.div_type == 'l1':
                 mnfld_n_gt = mnfld_n_gt.permute(1, 0, 2)
                 mnfld_hessian_term = mnfld_hessian_term.squeeze(0)
@@ -159,88 +117,49 @@ class MorseLoss_quad_mesh(nn.Module):
         vector_beta = vector_beta / (vector_beta.norm(dim=-1, keepdim=True) + 1e-12)
         vector_beta = vector_beta.unsqueeze(1)
 
-        theta_hessian_term = torch.zeros(1, device=self.device)
-        theta_neighbors_term = torch.zeros(1, device=self.device)
+        theta_hessian_term = torch.tensor([0.0], device=self.device)
+        theta_neighbors_term = torch.tensor([0.0], device=self.device)
 
-        # Lazy pre-computation on first forward pass
-        if not self._indices_precomputed:
-            self._precompute_indices()
+        for i in range(len(self.vertex_neighbors_list)):
+            idx = torch.tensor(self.vertex_neighbors_list[i]).to(self.device)
 
-        # Optimized: Use pre-computed indices to avoid repeated CPU-GPU transfers
-        if self.vertex_neighbors_list is not None and len(self.vertex_neighbors_list) > 0:
-            for i in range(len(self.vertex_neighbors_list)):
-                # Use pre-computed GPU indices if available
-                if hasattr(self, 'vertex_indices_gpu') and self.vertex_indices_gpu is not None:
-                    idx = self.vertex_indices_gpu[i]
-                else:
-                    idx = torch.tensor(self.vertex_neighbors_list[i], dtype=torch.long, device=self.device)
+            # theta_hessian_term
+            hessian_i = mnfld_hessian_term[idx].unsqueeze(1)  # n x 1 x 3 x 3
+            vector_alpha_i = vector_alpha[idx].unsqueeze(1)  # n x 1 x 1 x 3
+            vector_beta_i = vector_beta[idx].unsqueeze(1)  # n x 1 x 1 x 3
 
-                # theta_hessian_term
-                hessian_i = mnfld_hessian_term[idx].unsqueeze(1)  # n x 1 x 3 x 3
-                vector_alpha_i = vector_alpha[idx].unsqueeze(1)  # n x 1 x 1 x 3
-                vector_beta_i = vector_beta[idx].unsqueeze(1)  # n x 1 x 1 x 3
+            vertex_h_term_alpha = torch.matmul(vector_alpha_i, hessian_i)
+            vertex_h_term_alpha = torch.linalg.cross(vertex_h_term_alpha, vector_alpha_i)
+            vertex_h_term_alpha = vertex_h_term_alpha.abs().mean()
 
-                vertex_h_term_alpha = torch.matmul(vector_alpha_i, hessian_i)
-                vertex_h_term_alpha = torch.linalg.cross(vertex_h_term_alpha, vector_alpha_i)
-                vertex_h_term_alpha = vertex_h_term_alpha.abs().mean()
+            vertex_h_term_beta = torch.matmul(vector_beta_i, hessian_i)
+            vertex_h_term_beta = torch.linalg.cross(vertex_h_term_beta, vector_beta_i)
+            vertex_h_term_beta = vertex_h_term_beta.abs().mean()
 
-                vertex_h_term_beta = torch.matmul(vector_beta_i, hessian_i)
-                vertex_h_term_beta = torch.linalg.cross(vertex_h_term_beta, vector_beta_i)
-                vertex_h_term_beta = vertex_h_term_beta.abs().mean()
+            vertex_h_term = 0.5 * (vertex_h_term_alpha + vertex_h_term_beta)
+            theta_hessian_term += vertex_h_term
 
-                vertex_h_term = 0.5 * (vertex_h_term_alpha + vertex_h_term_beta)
-                theta_hessian_term += vertex_h_term
+            # theta_neighbors_term
+            vertex_neighbors_i = [self.vertex_neighbors[z] for z in idx]
+            vertex_neighbors_i = torch.tensor(vertex_neighbors_i, dtype=torch.long)  # n x neighbors_size
+            vector_alpha_j = vector_alpha[vertex_neighbors_i]  # n x neighbors_size x 1 x 3
+            vector_beta_j = vector_beta[vertex_neighbors_i]  # n x neighbors_size x 1 x 3
 
-                # theta_neighbors_term
-                # Pre-compute neighbor indices on CPU once, then convert to GPU
-                vertex_neighbors_i = [self.vertex_neighbors[z.item()] if isinstance(z, torch.Tensor) else self.vertex_neighbors[z] 
-                                     for z in idx]
-                
-                # Process each vertex's neighbors
-                for v_idx, neighbors_list in enumerate(vertex_neighbors_i):
-                    if len(neighbors_list) > 0:
-                        neighbor_idx = torch.tensor(neighbors_list, dtype=torch.long, device=self.device)
-                        vector_alpha_j = vector_alpha[neighbor_idx].unsqueeze(1)  # neighbors x 1 x 3
-                        vector_beta_j = vector_beta[neighbor_idx].unsqueeze(1)  # neighbors x 1 x 3
+            if self.axis_angle_R_mat_list is not None:
+                axis_angle_R_mat_i = torch.tensor(self.axis_angle_R_mat_list[i]).to(self.device)
+                vector_alpha_j = utils.transform_vectors_only_rotation(vector_alpha_j, axis_angle_R_mat_i)
+                vector_beta_j = utils.transform_vectors_only_rotation(vector_beta_j, axis_angle_R_mat_i)
 
-                        # Use pre-computed rotation matrices if available
-                        # Add batch dimension for transform function: (1, neighbors, 1, 3)
-                        vector_alpha_j_batched = vector_alpha_j.unsqueeze(0)
-                        vector_beta_j_batched = vector_beta_j.unsqueeze(0)
-                        
-                        if hasattr(self, 'rotation_matrices_gpu') and self.rotation_matrices_gpu is not None:
-                            if self.rotation_matrices_gpu[i] is not None and v_idx < len(self.rotation_matrices_gpu[i]):
-                                axis_angle_R_mat_i = self.rotation_matrices_gpu[i][v_idx:v_idx+1]  # 1 x neighbors x 3 x 3
-                                if axis_angle_R_mat_i.shape[1] == len(neighbor_idx):
-                                    vector_alpha_j_batched = utils.transform_vectors_only_rotation(
-                                        vector_alpha_j_batched, axis_angle_R_mat_i)
-                                    vector_beta_j_batched = utils.transform_vectors_only_rotation(
-                                        vector_beta_j_batched, axis_angle_R_mat_i)
-                        elif self.axis_angle_R_mat_list is not None and i < len(self.axis_angle_R_mat_list):
-                            axis_angle_R_mat_i = torch.tensor(self.axis_angle_R_mat_list[i][v_idx:v_idx+1], 
-                                                             dtype=torch.float32, device=self.device)
-                            if axis_angle_R_mat_i.shape[1] == len(neighbor_idx):
-                                vector_alpha_j_batched = utils.transform_vectors_only_rotation(
-                                    vector_alpha_j_batched, axis_angle_R_mat_i)
-                                vector_beta_j_batched = utils.transform_vectors_only_rotation(
-                                    vector_beta_j_batched, axis_angle_R_mat_i)
-                        
-                        # Keep batch dimension for permute operation: (1, neighbors, 1, 3)
-                        vector_alpha_j = vector_alpha_j_batched
-                        vector_beta_j = vector_beta_j_batched
+            neighbors_term_alpha_alpha = torch.matmul(vector_alpha_i, vector_alpha_j.permute(0, 1, 3, 2)).abs()
+            neighbors_term_alpha_beta = torch.matmul(vector_alpha_i, vector_beta_j.permute(0, 1, 3, 2)).abs()
+            neighbors_term_beta_alpha = torch.matmul(vector_beta_i, vector_alpha_j.permute(0, 1, 3, 2)).abs()
+            neighbors_term_beta_beta = torch.matmul(vector_beta_i, vector_beta_j.permute(0, 1, 3, 2)).abs()
+            neighbors_term = (neighbors_term_alpha_alpha + neighbors_term_alpha_beta + neighbors_term_beta_alpha + \
+                              neighbors_term_beta_beta - 2).mean()  # the sum value is greater than 2
 
-                        vector_alpha_i_v = vector_alpha_i[v_idx:v_idx+1]  # 1 x 1 x 3
-                        vector_beta_i_v = vector_beta_i[v_idx:v_idx+1]  # 1 x 1 x 3
-                        
-                        neighbors_term_alpha_alpha = torch.matmul(vector_alpha_i_v, vector_alpha_j.permute(0, 1, 3, 2)).abs()
-                        neighbors_term_alpha_beta = torch.matmul(vector_alpha_i_v, vector_beta_j.permute(0, 1, 3, 2)).abs()
-                        neighbors_term_beta_alpha = torch.matmul(vector_beta_i_v, vector_alpha_j.permute(0, 1, 3, 2)).abs()
-                        neighbors_term_beta_beta = torch.matmul(vector_beta_i_v, vector_beta_j.permute(0, 1, 3, 2)).abs()
-                        neighbors_term = (neighbors_term_alpha_alpha + neighbors_term_alpha_beta + 
-                                        neighbors_term_beta_alpha + neighbors_term_beta_beta - 2).mean()
-                        theta_neighbors_term += neighbors_term
+            theta_neighbors_term += neighbors_term
 
-        num_vert_neigh = len(self.vertex_neighbors_list) if self.vertex_neighbors_list else 1
+        num_vert_neigh = len(self.vertex_neighbors_list)
         theta_hessian_term = theta_hessian_term / num_vert_neigh
         theta_neighbors_term = theta_neighbors_term / num_vert_neigh
 
