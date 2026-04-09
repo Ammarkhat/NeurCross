@@ -1,0 +1,43 @@
+# Cell 1: runtime sanity check
+import sys, torch
+print("Python:", sys.version)
+print("Torch:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("GPU:", torch.cuda.get_device_name(0))
+
+
+# Cell 2: clone repo
+!rm -rf NeurCross/
+!git clone https://github.com/Ammarkhat/NeurCross.git
+%cd NeurCross
+
+# Cell 3: install project deps (keep Colab's torch)
+!pip install -U pip
+!pip install numpy scipy trimesh torch_kmeans timm==0.6.13 torchinfo
+
+
+# Cell 4: verify imports
+import torch, timm, trimesh, scipy, torch_kmeans
+from torchinfo import summary
+print("Imports OK")
+print("Torch:", torch.__version__)
+
+
+# Cell 5: run training (from repo root, explicit data path)
+
+!cp -rf data/doubleTorus/ doubleTorus/
+!python quad_mesh/train_quad_mesh.py --data_path data/doubleTorus/input/doubleTorus.ply
+
+!python quad_mesh/train_quad_mesh.py
+
+
+!python quad_mesh/train_quad_mesh.py --n_samples 1500 --n_points 5000 --grid_res 128 --decoder_hidden_dim 128 --decoder_n_hidden_layers 3
+!python quad_mesh/train_quad_mesh.py --n_samples 3000 --n_points 7000 --grid_res 128
+
+!python quad_mesh/train_quad_mesh.py --n_samples 1200 --n_points 3500 --grid_res 96 --decoder_hidden_dim 128 --decoder_n_hidden_layers 3
+
+
+
+
+!python quad_mesh/train_quad_mesh.py --data_path data/doubleTorus/input/13_denoised.ply --n_samples 1200 --n_points 3500 --grid_res 96 --decoder_hidden_dim 128 --decoder_n_hidden_layers 3
